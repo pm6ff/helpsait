@@ -169,21 +169,57 @@ if ($action === 'change_password' && $method === 'POST') {
     json_out(['success' => true]);
 }
 
-// --- CRUD ПУБЛИКАЦИЙ ---
+// --- CRUD ПУБЛИКАЦИЙ (С ПОИСКОМ И ФИЛЬТРАМИ) ---
 if ($action === 'exams' && $method === 'GET') {
-    // ВАЖНО: добавлено условие WHERE p.status = 'open', чтобы закрытые заявки пропадали
-    $exams = $pdo->query("
-        SELECT p.*, u.name as author_name, u.telegram as author_telegram 
-        FROM publications p 
-        JOIN users u ON p.user_id = u.id 
-        WHERE p.status = 'open'
-        ORDER BY p.created_at DESC
-    ")->fetchAll();
+    $where = ["p.status = 'open'"]; // Закрытые не показываем
+    $params = [];
+
+    // Поиск (title или description)
+    $q = trim($_GET['q'] ?? '');
+    if ($q !== '') {
+        $where[] = "(p.title LIKE ? OR p.description LIKE ?)";
+        $params[] = "%{$q}%";
+        $params[] = "%{$q}%";
+    }
+
+    // Фильтр по типу
+    $type = $_GET['type'] ?? '';
+    if ($type === 'exam' || $type === 'help') {
+        $where[] = "p.type = ?";
+        $params[] = $type;
+    }
+
+    // Фильтр по категории
+    $category = $_GET['category'] ?? '';
+    if ($category !== '') {
+        $where[] = "p.category = ?";
+        $params[] = $category;
+    }
+
+    // Безопасная сортировка (белый список)
+    $allowedSort = [
+        'created_at_desc' => 'p.created_at DESC',
+        'created_at_asc'  => 'p.created_at ASC',
+        'title_asc'       => 'p.title ASC',
+        'title_desc'      => 'p.title DESC'
+    ];
+    $sort = $_GET['sort'] ?? 'created_at_desc';
+    $orderBy = $allowedSort[$sort] ?? 'p.created_at DESC';
+
+    $sql = "SELECT p.*, u.name as author_name, u.telegram as author_telegram 
+            FROM publications p 
+            JOIN users u ON p.user_id = u.id 
+            WHERE " . implode(' AND ', $where) . " 
+            ORDER BY $orderBy";
+            
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $exams = $stmt->fetchAll();
 
     foreach ($exams as &$e) {
-        $stmt = $pdo->prepare("SELECT o.*, u.name as user_name, u.telegram as user_telegram FROM offers o JOIN users u ON o.user_id = u.id WHERE o.exam_id = ?");
-        $stmt->execute([$e['id']]);
-        $e['offers'] = $stmt->fetchAll();
+        $stmtOffers = $pdo->prepare("SELECT o.*, u.name as user_name, u.telegram as user_telegram FROM offers o JOIN users u ON o.user_id = u.id WHERE o.exam_id = ?");
+        $stmtOffers->execute([$e['id']]);
+        $e['offers'] = $stmtOffers->fetchAll();
         $e['deadline'] = $e['created_at'];
         $e['subject'] = $e['category']; 
     }
@@ -191,12 +227,7 @@ if ($action === 'exams' && $method === 'GET') {
 }
 
 if ($action === 'get_exam' && isset($_GET['id'])) {
-    $stmt = $pdo->prepare("
-        SELECT p.*, u.name as author_name, u.telegram as author_telegram 
-        FROM publications p 
-        JOIN users u ON p.user_id = u.id 
-        WHERE p.id = ?
-    ");
+    $stmt = $pdo->prepare("SELECT p.*, u.name as author_name, u.telegram as author_telegram FROM publications p JOIN users u ON p.user_id = u.id WHERE p.id = ?");
     $stmt->execute([$_GET['id']]);
     $pub = $stmt->fetch();
     if (!$pub) json_out(['error' => 'Не найдено'], 404);
@@ -210,19 +241,12 @@ if ($action === 'create_exam' && $method === 'POST') {
     $title = clean($input['title'] ?? '', 100);
     $description = clean($input['description'] ?? '', 1000);
     $category = clean($input['category'] ?? $input['subject'] ?? 'Разное', 60);
+    $type = ($input['type'] ?? '') === 'help' ? 'help' : 'exam';
     
-    $level = clean($input['level'] ?? '', 60);
-    $deadline = clean($input['deadline'] ?? '', 20);
-    $format = clean($input['format'] ?? '', 20);
-    $price = clean($input['price'] ?? '', 40);
-    if ($level || $deadline || $format || $price) {
-        $description .= "\n\n[Класс: $level, Дата: $deadline, Формат: $format, Оплата: $price]";
-    }
-
     if (strlen($title) < 2) json_out(['error' => 'Заголовок слишком короткий'], 400);
 
     $stmt = $pdo->prepare("INSERT INTO publications (user_id, title, description, type, category) VALUES (?,?,?,?,?)");
-    $stmt->execute([$_SESSION['user_id'], $title, $description, 'exam', $category]);
+    $stmt->execute([$_SESSION['user_id'], $title, $description, $type, $category]);
     json_out(['id' => $pdo->lastInsertId()]);
 }
 
