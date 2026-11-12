@@ -15,50 +15,45 @@ $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 // --- Таблицы ---
 $pdo->exec("CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    pass TEXT NOT NULL,
-    bio TEXT DEFAULT '',
-    skills TEXT DEFAULT '',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    telegram TEXT DEFAULT ''
+    name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, pass TEXT NOT NULL,
+    bio TEXT DEFAULT '', skills TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, telegram TEXT DEFAULT ''
 )");
 
 $pdo->exec("CREATE TABLE IF NOT EXISTS publications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('exam', 'help')),
-    category TEXT DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'closed', 'archived')),
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+    title TEXT NOT NULL, description TEXT NOT NULL, type TEXT NOT NULL CHECK(type IN ('exam', 'help')),
+    category TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'closed', 'archived')),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )");
 
-$pdo->exec("CREATE TABLE IF NOT EXISTS offers (
+// НОВАЯ ТАБЛИЦА ЗАЯВОК (по ТЗ)
+$pdo->exec("CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    exam_id INTEGER,
-    user_id INTEGER,
-    text TEXT, telegram TEXT,
-    status TEXT DEFAULT 'pending',
-    FOREIGN KEY (exam_id) REFERENCES publications(id) ON DELETE CASCADE
+    offer_id INTEGER NOT NULL,
+    sender_id INTEGER NOT NULL,
+    receiver_id INTEGER NOT NULL,
+    message TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected', 'cancelled')),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (offer_id) REFERENCES publications(id) ON DELETE CASCADE,
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE (offer_id, sender_id) -- Защита от дублей
 )");
 
 // --- Демо-данные ---
 if ($isNew) {
     $h1 = password_hash('1234', PASSWORD_DEFAULT);
     $h2 = password_hash('1234', PASSWORD_DEFAULT);
-    $pdo->prepare("INSERT INTO users (name, email, pass, bio, skills, telegram) VALUES (?,?,?,?,?,?)")
-        ->execute(['Анна Петрова', 'anna@mail.ru', $h1, 'Помогаю с математикой', 'математика, физика', '@anna_math']);
-    $pdo->prepare("INSERT INTO users (name, email, pass, bio, skills, telegram) VALUES (?,?,?,?,?,?)")
-        ->execute(['Иван Сидоров', 'ivan@mail.ru', $h2, 'Программирование', 'js, python', '@ivan_dev']);
+    $pdo->prepare("INSERT INTO users (name, email, pass, telegram) VALUES (?,?,?,?)")
+        ->execute(['Анна Петрова', 'anna@mail.ru', $h1, '@anna_math']);
+    $pdo->prepare("INSERT INTO users (name, email, pass, telegram) VALUES (?,?,?,?)")
+        ->execute(['Иван Сидоров', 'ivan@mail.ru', $h2, '@ivan_dev']);
     
     $pdo->prepare("INSERT INTO publications (user_id, title, description, type, category) VALUES (?,?,?,?,?)")
-        ->execute([1, 'Подготовка к ЕГЭ по математике', 'Разбор задач части С. 11 класс. Онлайн. 1000 ₽. Дата: 2026-06-15', 'exam', 'Математика']);
-    $pdo->prepare("INSERT INTO publications (user_id, title, description, type, category) VALUES (?,?,?,?,?)")
-        ->execute([2, 'Экзамен по английскому (B2)', 'Разговорная практика. 2 курс. Онлайн. 800 ₽. Дата: 2026-05-20', 'exam', 'Английский']);
+        ->execute([1, 'Подготовка к ЕГЭ по математике', 'Разбор задач части С.', 'exam', 'Математика']);
 }
 
 // --- Хелперы ---
@@ -67,19 +62,16 @@ function json_out($data, $code = 200) {
     echo json_encode($data, JSON_UNESCAPED_UNICODE);
     exit;
 }
-
 function clean($str, $max = 255) {
     if (!is_string($str)) return '';
     $str = strip_tags($str);
     $str = htmlspecialchars($str, ENT_QUOTES, 'UTF-8');
     return function_exists('mb_substr') ? mb_substr(trim($str), 0, $max) : substr(trim($str), 0, $max);
 }
-
 function get_json_input() {
     return json_decode(file_get_contents('php://input'), true) ?: [];
 }
 
-// --- Роутинг ---
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
 
@@ -104,8 +96,6 @@ if ($action === 'register' && $method === 'POST') {
     $name = clean($input['name'] ?? '', 60);
     $email = clean($input['email'] ?? '', 100);
     $pass = $input['pass'] ?? '';
-    $bio = clean($input['bio'] ?? '', 300);
-    $skills = clean($input['skills'] ?? '', 200);
     $telegram = clean($input['telegram'] ?? '', 32);
 
     if (strlen($name) < 2) json_out(['error' => 'Имя слишком короткое'], 400);
@@ -117,16 +107,13 @@ if ($action === 'register' && $method === 'POST') {
     if ($stmt->fetch()) json_out(['error' => 'Email уже существует'], 400);
 
     $hash = password_hash($pass, PASSWORD_DEFAULT);
-    $pdo->prepare("INSERT INTO users (name, email, pass, bio, skills, telegram) VALUES (?,?,?,?,?,?)")
-        ->execute([$name, $email, $hash, $bio, $skills, $telegram]);
+    $pdo->prepare("INSERT INTO users (name, email, pass, telegram) VALUES (?,?,?,?)")
+        ->execute([$name, $email, $hash, $telegram]);
     $_SESSION['user_id'] = $pdo->lastInsertId();
     json_out(['success' => true]);
 }
 
-if ($action === 'logout') {
-    session_destroy();
-    json_out(['success' => true]);
-}
+if ($action === 'logout') { session_destroy(); json_out(['success' => true]); }
 
 if ($action === 'me') {
     if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
@@ -138,8 +125,7 @@ if ($action === 'me') {
 if ($action === 'update_profile' && $method === 'POST') {
     if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
     $input = get_json_input();
-    $id = (int)($input['id'] ?? 0);
-    if ($id !== (int)$_SESSION['user_id']) json_out(['error' => 'Доступ запрещен'], 403);
+    if ((int)($input['id'] ?? 0) !== (int)$_SESSION['user_id']) json_out(['error' => 'Доступ запрещен'], 403);
 
     $name = clean($input['name'] ?? '');
     $bio = clean($input['bio'] ?? '', 300);
@@ -156,7 +142,6 @@ if ($action === 'change_password' && $method === 'POST') {
     $input = get_json_input();
     $oldPass = $input['oldPass'] ?? '';
     $newPass = $input['newPass'] ?? '';
-
     if (strlen($newPass) < 4) json_out(['error' => 'Пароль слишком короткий'], 400);
 
     $stmt = $pdo->prepare("SELECT pass FROM users WHERE id = ?");
@@ -169,151 +154,138 @@ if ($action === 'change_password' && $method === 'POST') {
     json_out(['success' => true]);
 }
 
-// --- CRUD ПУБЛИКАЦИЙ (С ПОИСКОМ И ФИЛЬТРАМИ) ---
+// --- КАТАЛОГ ПУБЛИКАЦИЙ ---
 if ($action === 'exams' && $method === 'GET') {
-    $where = ["p.status = 'open'"]; // Закрытые не показываем
-    $params = [];
-
-    // Поиск (title или description)
-    $q = trim($_GET['q'] ?? '');
-    if ($q !== '') {
+    $where = ["p.status = 'open'"]; $params = [];
+    if (!empty($_GET['q'])) {
         $where[] = "(p.title LIKE ? OR p.description LIKE ?)";
-        $params[] = "%{$q}%";
-        $params[] = "%{$q}%";
+        $params[] = "%{$_GET['q']}%"; $params[] = "%{$_GET['q']}%";
     }
+    if (!empty($_GET['type'])) { $where[] = "p.type = ?"; $params[] = $_GET['type']; }
+    if (!empty($_GET['category'])) { $where[] = "p.category = ?"; $params[] = $_GET['category']; }
 
-    // Фильтр по типу
-    $type = $_GET['type'] ?? '';
-    if ($type === 'exam' || $type === 'help') {
-        $where[] = "p.type = ?";
-        $params[] = $type;
-    }
+    $allowedSort = ['created_at_desc' => 'p.created_at DESC', 'created_at_asc' => 'p.created_at ASC', 'title_asc' => 'p.title ASC', 'title_desc' => 'p.title DESC'];
+    $orderBy = $allowedSort[$_GET['sort'] ?? 'created_at_desc'] ?? 'p.created_at DESC';
 
-    // Фильтр по категории
-    $category = $_GET['category'] ?? '';
-    if ($category !== '') {
-        $where[] = "p.category = ?";
-        $params[] = $category;
-    }
-
-    // Безопасная сортировка (белый список)
-    $allowedSort = [
-        'created_at_desc' => 'p.created_at DESC',
-        'created_at_asc'  => 'p.created_at ASC',
-        'title_asc'       => 'p.title ASC',
-        'title_desc'      => 'p.title DESC'
-    ];
-    $sort = $_GET['sort'] ?? 'created_at_desc';
-    $orderBy = $allowedSort[$sort] ?? 'p.created_at DESC';
-
-    $sql = "SELECT p.*, u.name as author_name, u.telegram as author_telegram 
-            FROM publications p 
-            JOIN users u ON p.user_id = u.id 
-            WHERE " . implode(' AND ', $where) . " 
-            ORDER BY $orderBy";
-            
+    $sql = "SELECT p.*, u.name as author_name, u.telegram as author_telegram FROM publications p JOIN users u ON p.user_id = u.id WHERE " . implode(' AND ', $where) . " ORDER BY $orderBy";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
-    $exams = $stmt->fetchAll();
-
-    foreach ($exams as &$e) {
-        $stmtOffers = $pdo->prepare("SELECT o.*, u.name as user_name, u.telegram as user_telegram FROM offers o JOIN users u ON o.user_id = u.id WHERE o.exam_id = ?");
-        $stmtOffers->execute([$e['id']]);
-        $e['offers'] = $stmtOffers->fetchAll();
-        $e['deadline'] = $e['created_at'];
-        $e['subject'] = $e['category']; 
-    }
-    json_out($exams);
+    json_out($stmt->fetchAll());
 }
 
 if ($action === 'get_exam' && isset($_GET['id'])) {
     $stmt = $pdo->prepare("SELECT p.*, u.name as author_name, u.telegram as author_telegram FROM publications p JOIN users u ON p.user_id = u.id WHERE p.id = ?");
     $stmt->execute([$_GET['id']]);
-    $pub = $stmt->fetch();
-    if (!$pub) json_out(['error' => 'Не найдено'], 404);
-    json_out($pub);
+    json_out($stmt->fetch());
 }
 
 if ($action === 'create_exam' && $method === 'POST') {
     if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
     $input = get_json_input();
-
     $title = clean($input['title'] ?? '', 100);
     $description = clean($input['description'] ?? '', 1000);
-    $category = clean($input['category'] ?? $input['subject'] ?? 'Разное', 60);
+    $category = clean($input['category'] ?? 'Разное', 60);
     $type = ($input['type'] ?? '') === 'help' ? 'help' : 'exam';
-    
     if (strlen($title) < 2) json_out(['error' => 'Заголовок слишком короткий'], 400);
 
-    $stmt = $pdo->prepare("INSERT INTO publications (user_id, title, description, type, category) VALUES (?,?,?,?,?)");
-    $stmt->execute([$_SESSION['user_id'], $title, $description, $type, $category]);
+    $pdo->prepare("INSERT INTO publications (user_id, title, description, type, category) VALUES (?,?,?,?,?)")
+        ->execute([$_SESSION['user_id'], $title, $description, $type, $category]);
     json_out(['id' => $pdo->lastInsertId()]);
 }
 
 if ($action === 'update_exam' && $method === 'POST') {
     if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
-    $input = get_json_input();
-    $id = (int)($input['id'] ?? 0);
+    $input = get_json_input(); $id = (int)($input['id'] ?? 0);
 
     $stmt = $pdo->prepare("SELECT user_id FROM publications WHERE id = ?");
     $stmt->execute([$id]);
-    $pub = $stmt->fetch();
-    if (!$pub) json_out(['error' => 'Публикация не найдена'], 404);
-    if ($pub['user_id'] !== (int)$_SESSION['user_id']) json_out(['error' => 'Можно редактировать только свои записи'], 403);
-
-    $title = clean($input['title'] ?? '', 100);
-    $description = clean($input['description'] ?? '', 1000);
-    $category = clean($input['category'] ?? '', 60);
-    $status = in_array($input['status'] ?? '', ['open', 'closed', 'archived']) ? $input['status'] : 'open';
+    if ($stmt->fetch()['user_id'] !== (int)$_SESSION['user_id']) json_out(['error' => 'Только свои записи'], 403);
 
     $pdo->prepare("UPDATE publications SET title = ?, description = ?, category = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        ->execute([$title, $description, $category, $status, $id]);
+        ->execute([clean($input['title']), clean($input['description']), clean($input['category']), $input['status'], $id]);
     json_out(['success' => true]);
 }
 
 if ($action === 'delete_exam' && $method === 'POST') {
     if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
-    $input = get_json_input();
-    $id = (int)($input['id'] ?? 0);
-
+    $id = (int)(get_json_input()['id'] ?? 0);
     $stmt = $pdo->prepare("SELECT user_id FROM publications WHERE id = ?");
     $stmt->execute([$id]);
-    $pub = $stmt->fetch();
-    if (!$pub) json_out(['error' => 'Публикация не найдена'], 404);
-    if ($pub['user_id'] !== (int)$_SESSION['user_id']) json_out(['error' => 'Можно удалять только свои записи'], 403);
+    if ($stmt->fetch()['user_id'] !== (int)$_SESSION['user_id']) json_out(['error' => 'Только свои записи'], 403);
 
     $pdo->prepare("DELETE FROM publications WHERE id = ?")->execute([$id]);
     json_out(['success' => true]);
 }
 
-// --- ОТКЛИКИ И ЗАКРЫТИЕ ---
-if ($action === 'create_offer' && $method === 'POST') {
+// --- СИСТЕМА ЗАЯВОК (Requests) ---
+if ($action === 'create_request' && $method === 'POST') {
     if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
     $input = get_json_input();
-    $pdo->prepare("INSERT INTO offers (exam_id, user_id, text, telegram) VALUES (?,?,?,?)")
-        ->execute([
-            (int)($input['exam_id'] ?? 0),
-            $_SESSION['user_id'],
-            clean($input['text'] ?? '', 500),
-            clean($input['telegram'] ?? '', 32)
-        ]);
-    json_out(['id' => $pdo->lastInsertId()]);
+    $offer_id = (int)($input['offer_id'] ?? 0);
+    $message = clean($input['message'] ?? '', 500);
+
+    $stmt = $pdo->prepare("SELECT user_id FROM publications WHERE id = ?");
+    $stmt->execute([$offer_id]);
+    $pub = $stmt->fetch();
+    if (!$pub) json_out(['error' => 'Публикация не найдена'], 404);
+
+    // ЗАПРЕТ на свои заявки
+    if ($pub['user_id'] === (int)$_SESSION['user_id']) {
+        json_out(['error' => 'Нельзя откликаться на свою публикацию'], 403);
+    }
+
+    try {
+        $pdo->prepare("INSERT INTO requests (offer_id, sender_id, receiver_id, message) VALUES (?,?,?,?)")
+            ->execute([$offer_id, $_SESSION['user_id'], $pub['user_id'], $message]);
+        json_out(['success' => true]);
+    } catch (PDOException $e) {
+        json_out(['error' => 'Вы уже отправляли заявку на эту публикацию'], 400);
+    }
 }
 
-if ($action === 'update_offer' && $method === 'POST') {
+if ($action === 'my_requests' && $method === 'GET') {
+    if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
+    $uid = $_SESSION['user_id'];
+
+    $outgoing = $pdo->prepare("SELECT r.*, p.title, u.name as receiver_name FROM requests r JOIN publications p ON r.offer_id = p.id JOIN users u ON r.receiver_id = u.id WHERE r.sender_id = ? ORDER BY r.created_at DESC");
+    $outgoing->execute([$uid]);
+
+    $incoming = $pdo->prepare("SELECT r.*, p.title, u.name as sender_name, u.telegram as sender_telegram FROM requests r JOIN publications p ON r.offer_id = p.id JOIN users u ON r.sender_id = u.id WHERE r.receiver_id = ? ORDER BY r.created_at DESC");
+    $incoming->execute([$uid]);
+
+    json_out(['outgoing' => $outgoing->fetchAll(), 'incoming' => $incoming->fetchAll()]);
+}
+
+if ($action === 'update_request_status' && $method === 'POST') {
     if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
     $input = get_json_input();
-    $status = ($input['status'] ?? '') === 'accepted' ? 'accepted' : 'declined';
-    $pdo->prepare("UPDATE offers SET status = ? WHERE id = ?")->execute([$status, (int)($input['offer_id'] ?? 0)]);
+    $id = (int)($input['request_id'] ?? 0);
+    $new_status = $input['status'] ?? '';
+
+    $stmt = $pdo->prepare("SELECT * FROM requests WHERE id = ?");
+    $stmt->execute([$id]);
+    $req = $stmt->fetch();
+    if (!$req) json_out(['error' => 'Заявка не найдена'], 404);
+
+    // Проверка прав
+    if ($new_status === 'cancelled') {
+        if ($req['sender_id'] !== (int)$_SESSION['user_id']) json_out(['error' => 'Только отправитель может отменить'], 403);
+        if ($req['status'] !== 'pending') json_out(['error' => 'Отменить можно только ожидающую заявку'], 400);
+    } else if ($new_status === 'accepted' || $new_status === 'rejected') {
+        if ($req['receiver_id'] !== (int)$_SESSION['user_id']) json_out(['error' => 'Только получатель может принять/отклонить'], 403);
+        if ($req['status'] !== 'pending') json_out(['error' => 'Действие доступно только для ожидающих'], 400);
+    } else {
+        json_out(['error' => 'Неверный статус'], 400);
+    }
+
+    $pdo->prepare("UPDATE requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")->execute([$new_status, $id]);
+    
+    // Если приняли — закрываем публикацию
+    if ($new_status === 'accepted') {
+        $pdo->prepare("UPDATE publications SET status = 'closed' WHERE id = ?")->execute([$req['offer_id']]);
+    }
+    
     json_out(['success' => true]);
 }
 
-if ($action === 'close_exam' && $method === 'POST') {
-    if (empty($_SESSION['user_id'])) json_out(['error' => 'Не авторизован'], 401);
-    $input = get_json_input();
-    $pdo->prepare("UPDATE publications SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        ->execute([(int)($input['exam_id'] ?? 0)]);
-    json_out(['success' => true]);
-}
- 
 json_out(['error' => 'Неизвестный запрос'], 404);
