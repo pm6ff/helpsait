@@ -119,77 +119,94 @@ async function renderLogin(){
   $('#showLogin').onclick = (e) => { e.preventDefault(); $('#registerForm').style.display = 'none'; $('#loginForm').style.display = 'grid'; };
 }
 
-// --- CRUD + ОТКЛИКИ ---
+// --- CRUD + ПОИСК + ОТКЛИКИ ---
 async function renderHomework(){
   await loadMe();
   if (!currentUser) { location.href = 'index.html'; return; }
 
-  const res = await api('exams');
+  // Получаем параметры фильтрации из URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const q = urlParams.get('q') || '';
+  const type = urlParams.get('type') || '';
+  const category = urlParams.get('category') || '';
+  const sort = urlParams.get('sort') || 'created_at_desc';
+
+  // Отправляем их на сервер
+  const query = new URLSearchParams({ q, type, category, sort }).toString();
+  const res = await api(`exams&${query}`);
   const exams = await res.json();
 
   const cards = exams.map(r => {
     const mine = r.user_id == currentUser.id;
     const chips = r.status==='closed' ? '<span class="chip muted">закрыта</span>' : '<span class="chip">открыта</span>';
 
-    // Блок существующих откликов
     const offers = (r.offers||[]).map(o => {
-      const stat = o.status==='accepted' ? '<span class="chip accepted">принят</span>'
-        : o.status==='declined' ? '<span class="chip declined">отклонён</span>' 
-        : '<span class="chip muted">ожидает</span>';
-      
-      // Кнопка "Написать в Telegram" (только для автора заявки, если отклик ожидает)
-      const contactBtn = mine && o.status === 'pending' && o.telegram
-        ? `<a href="https://t.me/${esc(o.telegram).replace('@','')}" target="_blank" class="btn" style="text-decoration:none">Написать в TG</a>` : '';
-
-      // Кнопки "Принять" и "Отклонить" (только для автора заявки)
-      const acts = mine && o.status==='pending' && r.status==='open'
-        ? `<div class="actions">${contactBtn}
-             <button onclick="acceptOffer(${r.id}, ${o.id})">Принять</button>
-             <button onclick="declineOffer(${o.id})">Отклонить</button>
-           </div>` : '';
-           
+      const stat = o.status==='accepted' ? '<span class="chip accepted">принят</span>' : o.status==='declined' ? '<span class="chip declined">отклонён</span>' : '<span class="chip muted">ожидает</span>';
+      const contactBtn = mine && o.status === 'pending' && o.telegram ? `<a href="https://t.me/${esc(o.telegram).replace('@','')}" target="_blank" class="btn" style="text-decoration:none">Написать в TG</a>` : '';
+      const acts = mine && o.status==='pending' && r.status==='open' ? `<div class="actions">${contactBtn}<button onclick="acceptOffer(${r.id}, ${o.id})">Принять</button><button onclick="declineOffer(${o.id})">Отклонить</button></div>` : '';
       return `<div class="offer"><b>${esc(o.user_name)}</b> ${stat}<p>${esc(o.text)}</p>${acts}</div>`;
     }).join('');
 
-    // Форма для нового отклика (если это не моя заявка и она открыта)
-    const offerForm = !mine && r.status==='open'
-      ? `<details><summary class="btn">Откликнуться</summary>
-           <form class="form" onsubmit="submitOffer(event, ${r.id})">
-             <label>Чем поможете?<textarea name="text" rows="2" required maxlength="500"></textarea></label>
-             <label>Telegram (для связи)<input name="telegram" placeholder="@username" value="${esc(currentUser.telegram||'')}" maxlength="32"></label>
-             <button class="primary" type="submit">Отправить отклик</button>
-           </form></details>` : '';
+    const offerForm = !mine && r.status==='open' ? `<details><summary class="btn">Откликнуться</summary><form class="form" onsubmit="submitOffer(event, ${r.id})"><label>Чем поможете?<textarea name="text" rows="2" required></textarea></label><label>Telegram<input name="telegram" value="${esc(currentUser.telegram||'')}"></label><button class="primary" type="submit">Отправить</button></form></details>` : '';
 
     return `<article class="card">
       ${dateTile(r.created_at)}
       <div class="body">
         <h3>${esc(r.title)}</h3>
         <div class="meta">
-          <span>${esc(r.author_name)}</span>
-          <span>${esc(r.category)}</span>
+          <span><b>Автор:</b> ${esc(r.author_name)}</span>
+          <span><b>Категория:</b> ${esc(r.category)}</span>
+          <span><b>Дата:</b> ${new Date(r.created_at).toLocaleDateString('ru-RU')}</span>
           ${chips}
         </div>
         <p>${esc(r.description)}</p>
-        
         <div class="actions">
-          ${mine ? `
-            <button onclick="editExam(${r.id})">Редактировать</button>
-            <button class="danger" onclick="deleteExam(${r.id})">Удалить</button>
-          ` : ''}
+          ${mine ? `<button onclick="editExam(${r.id})">Редактировать</button><button class="danger" onclick="deleteExam(${r.id})">Удалить</button>` : ''}
           ${offerForm}
         </div>
-        
         ${r.offers && r.offers.length ? `<div class="offers">${offers}</div>` : ''}
       </div>
     </article>`;
   }).join('');
 
   layout('homework', `
-    <h1>Публикации</h1>
-    <div class="toolbar"><button class="primary" onclick="showNewForm()">+ Создать</button></div>
+    <h1>Каталог публикаций</h1>
+    
+    <form class="toolbar" method="GET" action="homework.html" style="margin-bottom: 20px; padding: 15px; background: #fff; border-radius: 10px; border: 1px solid #ddd; display:flex; gap:10px; flex-wrap:wrap;">
+      <input type="text" name="q" placeholder="Поиск по названию и описанию..." value="${esc(q)}" style="flex: 1; min-width: 200px;">
+      
+      <select name="type">
+        <option value="">Все типы</option>
+        <option value="exam" ${type==='exam'?'selected':''}>Экзамены</option>
+        <option value="help" ${type==='help'?'selected':''}>Помощь</option>
+      </select>
+
+      <select name="category">
+        <option value="">Все категории</option>
+        <option value="Математика" ${category==='Математика'?'selected':''}>Математика</option>
+        <option value="Английский" ${category==='Английский'?'selected':''}>Английский</option>
+        <option value="Программирование" ${category==='Программирование'?'selected':''}>Программирование</option>
+        <option value="Физика" ${category==='Физика'?'selected':''}>Физика</option>
+      </select>
+
+      <select name="sort">
+        <option value="created_at_desc" ${sort==='created_at_desc'?'selected':''}>Сначала новые</option>
+        <option value="created_at_asc" ${sort==='created_at_asc'?'selected':''}>Сначала старые</option>
+        <option value="title_asc" ${sort==='title_asc'?'selected':''}>По алфавиту (А-Я)</option>
+        <option value="title_desc" ${sort==='title_desc'?'selected':''}>По алфавиту (Я-А)</option>
+      </select>
+
+      <button class="primary" type="submit">Найти</button>
+      <a href="homework.html" class="btn" style="text-decoration:none; padding: 10px 15px;">Сброс</a>
+    </form>
+
+    <div class="toolbar" style="margin-bottom: 20px;">
+      <button class="primary" onclick="showNewForm()">+ Создать публикацию</button>
+    </div>
+    
     <div id="newWrap"></div>
     <div id="editWrap"></div>
-    <div class="list">${cards || '<div class="empty">Нет публикаций</div>'}</div>
+    <div class="list">${cards || '<div class="empty">Ничего не найдено</div>'}</div>
   `);
 }
 
@@ -200,6 +217,14 @@ window.showNewForm = () => {
       <div class="row">
         <label>Заголовок<input name="title" required maxlength="100"></label>
         <label>Категория<input name="category" required maxlength="60" value="Математика"></label>
+      </div>
+      <div class="row">
+        <label>Тип
+          <select name="type">
+            <option value="exam">Экзамен</option>
+            <option value="help">Помощь</option>
+          </select>
+        </label>
       </div>
       <label>Описание<textarea name="description" rows="4" required maxlength="1000"></textarea></label>
       <button class="primary" type="submit">Сохранить</button>
